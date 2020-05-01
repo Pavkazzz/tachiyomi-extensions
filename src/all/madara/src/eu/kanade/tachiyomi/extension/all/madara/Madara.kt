@@ -10,21 +10,23 @@ import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.ParsedHttpSource
-import okhttp3.CacheControl
-import okhttp3.FormBody
-import okhttp3.HttpUrl
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.Response
-import org.jsoup.nodes.Document
-import org.jsoup.nodes.Element
-import rx.Observable
+import eu.kanade.tachiyomi.util.asJsoup
 import java.text.ParseException
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+import okhttp3.CacheControl
+import okhttp3.FormBody
+import okhttp3.HttpUrl
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody
+import okhttp3.Response
+import org.jsoup.nodes.Document
+import org.jsoup.nodes.Element
+import rx.Observable
 
 abstract class Madara(
     override val name: String,
@@ -56,29 +58,30 @@ abstract class Madara(
             }
 
             select("img").first()?.let {
-                manga.thumbnail_url = it.absUrl(if (it.hasAttr("data-src")) "data-src" else "src")
+                manga.thumbnail_url = imageFromElement(it)
             }
         }
 
         return manga
     }
 
+    open fun formBuilder(page: Int, popular: Boolean) = FormBody.Builder().apply {
+        add("action", "madara_load_more")
+        add("page", (page - 1).toString())
+        add("template", "madara-core/content/content-archive")
+        add("vars[orderby]", "meta_value_num")
+        add("vars[paged]", "1")
+        add("vars[posts_per_page]", "20")
+        add("vars[post_type]", "wp-manga")
+        add("vars[post_status]", "publish")
+        add("vars[meta_key]", if (popular) "_wp_manga_views" else "_latest_update")
+        add("vars[order]", "desc")
+        add("vars[sidebar]", if (popular) "full" else "right")
+        add("vars[manga_archives_item_layout]", "big_thumbnail")
+    }
+
     override fun popularMangaRequest(page: Int): Request {
-        val form = FormBody.Builder().apply {
-            add("action", "madara_load_more")
-            add("page", (page - 1).toString())
-            add("template", "madara-core/content/content-archive")
-            add("vars[orderby]", "meta_value_num")
-            add("vars[paged]", "1")
-            add("vars[posts_per_page]", "20")
-            add("vars[post_type]", "wp-manga")
-            add("vars[post_status]", "publish")
-            add("vars[meta_key]", "_wp_manga_views")
-            add("vars[order]", "desc")
-            add("vars[sidebar]", "full")
-            add("vars[manga_archives_item_layout]", "big_thumbnail")
-        }
-        return POST("$baseUrl/wp-admin/admin-ajax.php", headers, form.build(), CacheControl.FORCE_NETWORK)
+        return POST("$baseUrl/wp-admin/admin-ajax.php", headers, formBuilder(page, true).build(), CacheControl.FORCE_NETWORK)
     }
 
     override fun popularMangaNextPageSelector(): String? = "body:not(:has(.no-posts))"
@@ -93,21 +96,7 @@ abstract class Madara(
     }
 
     override fun latestUpdatesRequest(page: Int): Request {
-        val form = FormBody.Builder().apply {
-            add("action", "madara_load_more")
-            add("page", (page - 1).toString())
-            add("template", "madara-core/content/content-archive")
-            add("vars[orderby]", "meta_value_num")
-            add("vars[paged]", "1")
-            add("vars[posts_per_page]", "20")
-            add("vars[post_type]", "wp-manga")
-            add("vars[post_status]", "publish")
-            add("vars[meta_key]", "_latest_update")
-            add("vars[order]", "desc")
-            add("vars[sidebar]", "right")
-            add("vars[manga_archives_item_layout]", "big_thumbnail")
-        }
-        return POST("$baseUrl/wp-admin/admin-ajax.php", headers, form.build(), CacheControl.FORCE_NETWORK)
+        return POST("$baseUrl/wp-admin/admin-ajax.php", headers, formBuilder(page, false).build(), CacheControl.FORCE_NETWORK)
     }
 
     override fun latestUpdatesNextPageSelector(): String? = popularMangaNextPageSelector()
@@ -176,8 +165,8 @@ abstract class Madara(
                             genreInclude.add(it.id)
                         }
                     }
-                    if(genreInclude.isNotEmpty()){
-                        genreInclude.forEach{ genre ->
+                    if (genreInclude.isNotEmpty()) {
+                        genreInclude.forEach { genre ->
                             url.addQueryParameter("genre[]", genre)
                         }
                     }
@@ -205,64 +194,64 @@ abstract class Madara(
 
     open fun getGenreList() = listOf(
         Genre("Adventure", "Adventure"),
-        Genre( "Action",  "action"),
-        Genre( "Adventure",  "adventure"),
-        Genre( "Cars",  "cars"),
-        Genre( "4-Koma",  "4-koma"),
-        Genre( "Comedy",  "comedy"),
-        Genre( "Completed",  "completed"),
-        Genre( "Cooking",  "cooking"),
-        Genre( "Dementia",  "dementia"),
-        Genre( "Demons",  "demons"),
-        Genre( "Doujinshi",  "doujinshi"),
-        Genre( "Drama",  "drama"),
-        Genre( "Ecchi",  "ecchi"),
-        Genre( "Fantasy",  "fantasy"),
-        Genre( "Game",  "game"),
-        Genre( "Gender Bender",  "gender-bender"),
-        Genre( "Harem",  "harem"),
-        Genre( "Historical",  "historical"),
-        Genre( "Horror",  "horror"),
-        Genre( "Isekai",  "isekai"),
-        Genre( "Josei",  "josei"),
-        Genre( "Kids",  "kids"),
-        Genre( "Magic",  "magic"),
-        Genre( "Manga",  "manga"),
-        Genre( "Manhua",  "manhua"),
-        Genre( "Manhwa",  "manhwa"),
-        Genre( "Martial Arts",  "martial-arts"),
-        Genre( "Mature",  "mature"),
-        Genre( "Mecha",  "mecha"),
-        Genre( "Military",  "military"),
-        Genre( "Music",  "music"),
-        Genre( "Mystery",  "mystery"),
-        Genre( "Old Comic",  "old-comic"),
-        Genre( "One Shot",  "one-shot"),
-        Genre( "Oneshot",  "oneshot"),
-        Genre( "Parodi",  "parodi"),
-        Genre( "Parody",  "parody"),
-        Genre( "Police",  "police"),
-        Genre( "Psychological",  "psychological"),
-        Genre( "Romance",  "romance"),
-        Genre( "Samurai",  "samurai"),
-        Genre( "School",  "school"),
-        Genre( "School Life",  "school-life"),
-        Genre( "Sci-Fi",  "sci-fi"),
-        Genre( "Seinen",  "seinen"),
-        Genre( "Shoujo",  "shoujo"),
-        Genre( "Shoujo Ai",  "shoujo-ai"),
-        Genre( "Shounen",  "shounen"),
-        Genre( "Shounen ai",  "shounen-ai"),
-        Genre( "Slice of Life",  "slice-of-life"),
-        Genre( "Sports",  "sports"),
-        Genre( "Super Power",  "super-power"),
-        Genre( "Supernatural",  "supernatural"),
-        Genre( "Thriller",  "thriller"),
-        Genre( "Tragedy",  "tragedy"),
-        Genre( "Vampire",  "vampire"),
-        Genre( "Webtoons",  "webtoons"),
-        Genre( "Yaoi",  "yaoi"),
-        Genre( "Yuri",  "yuri")
+        Genre("Action", "action"),
+        Genre("Adventure", "adventure"),
+        Genre("Cars", "cars"),
+        Genre("4-Koma", "4-koma"),
+        Genre("Comedy", "comedy"),
+        Genre("Completed", "completed"),
+        Genre("Cooking", "cooking"),
+        Genre("Dementia", "dementia"),
+        Genre("Demons", "demons"),
+        Genre("Doujinshi", "doujinshi"),
+        Genre("Drama", "drama"),
+        Genre("Ecchi", "ecchi"),
+        Genre("Fantasy", "fantasy"),
+        Genre("Game", "game"),
+        Genre("Gender Bender", "gender-bender"),
+        Genre("Harem", "harem"),
+        Genre("Historical", "historical"),
+        Genre("Horror", "horror"),
+        Genre("Isekai", "isekai"),
+        Genre("Josei", "josei"),
+        Genre("Kids", "kids"),
+        Genre("Magic", "magic"),
+        Genre("Manga", "manga"),
+        Genre("Manhua", "manhua"),
+        Genre("Manhwa", "manhwa"),
+        Genre("Martial Arts", "martial-arts"),
+        Genre("Mature", "mature"),
+        Genre("Mecha", "mecha"),
+        Genre("Military", "military"),
+        Genre("Music", "music"),
+        Genre("Mystery", "mystery"),
+        Genre("Old Comic", "old-comic"),
+        Genre("One Shot", "one-shot"),
+        Genre("Oneshot", "oneshot"),
+        Genre("Parodi", "parodi"),
+        Genre("Parody", "parody"),
+        Genre("Police", "police"),
+        Genre("Psychological", "psychological"),
+        Genre("Romance", "romance"),
+        Genre("Samurai", "samurai"),
+        Genre("School", "school"),
+        Genre("School Life", "school-life"),
+        Genre("Sci-Fi", "sci-fi"),
+        Genre("Seinen", "seinen"),
+        Genre("Shoujo", "shoujo"),
+        Genre("Shoujo Ai", "shoujo-ai"),
+        Genre("Shounen", "shounen"),
+        Genre("Shounen ai", "shounen-ai"),
+        Genre("Slice of Life", "slice-of-life"),
+        Genre("Sports", "sports"),
+        Genre("Super Power", "super-power"),
+        Genre("Supernatural", "supernatural"),
+        Genre("Thriller", "thriller"),
+        Genre("Tragedy", "tragedy"),
+        Genre("Vampire", "vampire"),
+        Genre("Webtoons", "webtoons"),
+        Genre("Yaoi", "yaoi"),
+        Genre("Yuri", "yuri")
     )
 
     override fun getFilterList() = FilterList(
@@ -301,7 +290,7 @@ abstract class Madara(
                 manga.title = it.ownText()
             }
             select("img").first()?.let {
-                manga.thumbnail_url = it.absUrl(if (it.hasAttr("data-src")) "data-src" else "src")
+                manga.thumbnail_url = imageFromElement(it)
             }
         }
 
@@ -335,7 +324,7 @@ abstract class Madara(
                 }
             }
             select("div.summary_image img").first()?.let {
-                manga.thumbnail_url = it.absUrl(if (it.hasAttr("data-src")) "data-src" else "src")
+                manga.thumbnail_url = imageFromElement(it)
             }
             select("div.summary-content").last()?.let {
                 manga.status = when (it.text()) {
@@ -357,13 +346,43 @@ abstract class Madara(
         return manga
     }
 
+    private fun imageFromElement(element: Element): String? {
+        return when {
+            element.hasAttr("data-src") -> element.attr("abs:data-src")
+            element.hasAttr("data-lazy-src") -> element.attr("abs:data-lazy-src")
+            element.hasAttr("srcset") -> element.attr("abs:srcset").substringBefore(" ")
+            else -> element.attr("abs:src")
+        }
+    }
+
+    protected fun getXhrChapters(mangaId: String): Document {
+        val xhrHeaders = headersBuilder().add("Content-Type: application/x-www-form-urlencoded; charset=UTF-8").build()
+        val body = RequestBody.create(null, "action=manga_get_chapters&manga=$mangaId")
+        return client.newCall(POST("$baseUrl/wp-admin/admin-ajax.php", xhrHeaders, body)).execute().asJsoup()
+    }
+
+    override fun chapterListParse(response: Response): List<SChapter> {
+        val document = response.asJsoup()
+        val dataIdSelector = "div#manga-chapters-holder"
+
+        return document.select(chapterListSelector())
+            .let { elements ->
+                if (elements.isEmpty() && !document.select(dataIdSelector).isNullOrEmpty())
+                    getXhrChapters(document.select(dataIdSelector).attr("data-id")).select(chapterListSelector())
+                        else elements
+            }
+            .map { chapterFromElement(it) }
+    }
+
     override fun chapterListSelector() = "li.wp-manga-chapter"
+
+    open val chapterUrlSelector = "a"
 
     override fun chapterFromElement(element: Element): SChapter {
         val chapter = SChapter.create()
 
         with(element) {
-            select("a").first()?.let { urlElement ->
+            select(chapterUrlSelector).first()?.let { urlElement ->
                 chapter.url = urlElement.attr("abs:href").let {
                     it.substringBefore("?style=paged") + if (!it.endsWith("?style=list")) "?style=list" else ""
                 }
@@ -390,10 +409,10 @@ abstract class Madara(
             date.endsWith(" ago", ignoreCase = true) -> {
                 parseRelativeDate(date)
             }
-            //Handle 'yesterday' and 'today', using midnight
+            // Handle 'yesterday' and 'today', using midnight
             date.startsWith("year", ignoreCase = true) -> {
                 Calendar.getInstance().apply {
-                    add(Calendar.DAY_OF_MONTH, -1) //yesterday
+                    add(Calendar.DAY_OF_MONTH, -1) // yesterday
                     set(Calendar.HOUR_OF_DAY, 0)
                     set(Calendar.MINUTE, 0)
                     set(Calendar.SECOND, 0)

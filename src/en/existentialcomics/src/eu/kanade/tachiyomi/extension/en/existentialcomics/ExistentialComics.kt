@@ -1,6 +1,10 @@
 package eu.kanade.tachiyomi.extension.en.existentialcomics
 
-import eu.kanade.tachiyomi.source.model.*
+import eu.kanade.tachiyomi.source.model.FilterList
+import eu.kanade.tachiyomi.source.model.MangasPage
+import eu.kanade.tachiyomi.source.model.Page
+import eu.kanade.tachiyomi.source.model.SChapter
+import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.ParsedHttpSource
 import okhttp3.Request
 import okhttp3.Response
@@ -43,15 +47,10 @@ class ExistentialComics : ParsedHttpSource() {
     override fun chapterListSelector() = "div#date-comics ul li a:eq(0)"
 
     override fun chapterFromElement(element: Element): SChapter {
-        val urlregex = "https://existentialcomics.com/comic/(.*)".toRegex()
-        val chapterUrl = element.attr("href")
-
-        val number = urlregex.find(chapterUrl)!!.groupValues[1]
-
         val chapter = SChapter.create()
-        chapter.url = "/comic/$number"
+        chapter.setUrlWithoutDomain(element.attr("href"))
         chapter.name = element.text()
-        chapter.chapter_number = number.toFloat()
+        chapter.chapter_number = chapter.url.substringAfterLast("/").toFloat()
         return chapter
     }
 
@@ -84,5 +83,4 @@ class ExistentialComics : ParsedHttpSource() {
     override fun latestUpdatesRequest(page: Int): Request = throw Exception("Not used")
 
     override fun latestUpdatesSelector(): String = throw Exception("Not used")
-
 }

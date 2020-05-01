@@ -4,7 +4,14 @@ import android.app.Application
 import android.content.SharedPreferences
 import android.support.v7.preference.ListPreference
 import android.support.v7.preference.PreferenceScreen
-import com.github.salomonbrys.kotson.*
+import com.github.salomonbrys.kotson.forEach
+import com.github.salomonbrys.kotson.get
+import com.github.salomonbrys.kotson.int
+import com.github.salomonbrys.kotson.keys
+import com.github.salomonbrys.kotson.long
+import com.github.salomonbrys.kotson.nullString
+import com.github.salomonbrys.kotson.obj
+import com.github.salomonbrys.kotson.string
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
@@ -13,36 +20,53 @@ import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.asObservable
 import eu.kanade.tachiyomi.network.asObservableSuccess
 import eu.kanade.tachiyomi.source.ConfigurableSource
-import eu.kanade.tachiyomi.source.model.*
+import eu.kanade.tachiyomi.source.model.Filter
+import eu.kanade.tachiyomi.source.model.FilterList
+import eu.kanade.tachiyomi.source.model.MangasPage
+import eu.kanade.tachiyomi.source.model.Page
+import eu.kanade.tachiyomi.source.model.SChapter
+import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.ParsedHttpSource
 import eu.kanade.tachiyomi.util.asJsoup
-import okhttp3.*
+import java.net.URLEncoder
+import java.util.Date
+import java.util.concurrent.TimeUnit
+import kotlin.collections.set
+import okhttp3.CacheControl
+import okhttp3.Headers
+import okhttp3.HttpUrl
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import org.jsoup.parser.Parser
 import rx.Observable
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
-import java.net.URLEncoder
-import java.util.Date
-import java.util.concurrent.TimeUnit
-import kotlin.collections.set
 
 abstract class Mangadex(
     override val lang: String,
     private val internalLang: String
 ) : ConfigurableSource, ParsedHttpSource() {
 
+    init {
+    }
+
     override val name = "MangaDex"
 
-    override val baseUrl = "https://mangadex.org"
+    override val baseUrl = "https://www.mangadex.org"
 
-    private val cdnUrl = "https://mangadex.org" // "https://s0.mangadex.org"
+    private val cdnUrl = "https://www.mangadex.org" // "https://s0.mangadex.org"
 
     override val supportsLatest = true
 
     private val preferences: SharedPreferences by lazy {
         Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
+    }
+
+    private val mangadexDescription: MangadexDescription by lazy {
+        MangadexDescription(internalLang)
     }
 
     private val rateLimitInterceptor = RateLimitInterceptor(4)
@@ -122,7 +146,6 @@ abstract class Mangadex(
         element.let {
             manga.setUrlWithoutDomain(modifyMangaUrl(it.attr("href")))
             manga.title = it.text().trim()
-
         }
         manga.thumbnail_url = formThumbUrl(manga.url)
 
@@ -299,9 +322,9 @@ abstract class Mangadex(
         }
 
         return if (groupSearch.isNotEmpty()) {
-            GET(groupSearch, headersBuilder().build())
+            GET(groupSearch, headersBuilder().build(), CacheControl.FORCE_NETWORK)
         } else {
-            GET(urlToUse, headersBuilder().build())
+            GET(urlToUse, headersBuilder().build(), CacheControl.FORCE_NETWORK)
         }
     }
 
@@ -316,7 +339,18 @@ abstract class Mangadex(
                 }
             }
         } else {
-            return super.searchMangaParse(response)
+            val document = response.asJsoup()
+            if (document.select("#login_button").isNotEmpty()) throw Exception("Log in via WebView to enable search")
+
+            val mangas = document.select(searchMangaSelector()).map { element ->
+                searchMangaFromElement(element)
+            }
+
+            val hasNextPage = searchMangaNextPageSelector().let { selector ->
+                document.select(selector).first()
+            } != null
+
+            return MangasPage(mangas, hasNextPage)
         }
     }
 
@@ -357,7 +391,7 @@ abstract class Mangadex(
         return if (lastSection.toIntOrNull() != null) {
             lastSection
         } else {
-            //this occurs if person has manga from before that had the id/name/
+            // this occurs if person has manga from before that had the id/name/
             url.trimEnd('/').substringBeforeLast("/").substringAfterLast("/")
         }
     }
@@ -370,9 +404,9 @@ abstract class Mangadex(
         val chapterJson = json.getAsJsonObject("chapter")
         manga.title = cleanString(mangaJson.get("title").string)
         manga.thumbnail_url = cdnUrl + mangaJson.get("cover_url").string
-        manga.description = cleanString(mangaJson.get("description").string)
-        manga.author = mangaJson.get("author").string
-        manga.artist = mangaJson.get("artist").string
+        manga.description = cleanString(mangadexDescription.clean(mangaJson.get("description").string))
+        manga.author = cleanString(mangaJson.get("author").string)
+        manga.artist = cleanString(mangaJson.get("artist").string)
         val status = mangaJson.get("status").int
         val finalChapterNumber = getFinalChapter(mangaJson)
         if ((status == 2 || status == 3) && chapterJson != null && isMangaCompleted(chapterJson, finalChapterNumber)) {
@@ -384,7 +418,8 @@ abstract class Mangadex(
         }
 
         val genres = (if (mangaJson.get("hentai").int == 1) listOf("Hentai") else listOf()) +
-            mangaJson.get("genres").asJsonArray.mapNotNull { GENRES[it.toString()] }
+            mangaJson.get("genres").asJsonArray.mapNotNull { GENRES[it.toString()] } +
+            mangaJson.get("lang_name").string
         manga.genre = genres.joinToString(", ")
 
         return manga
@@ -489,7 +524,7 @@ abstract class Mangadex(
             }
             chapterName.add(chapterJson.get("title").string)
         }
-        //if volume, chapter and title is empty its a oneshot
+        // if volume, chapter and title is empty its a oneshot
         if (chapterName.isEmpty()) {
             chapterName.add("Oneshot")
         }

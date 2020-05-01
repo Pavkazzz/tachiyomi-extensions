@@ -8,8 +8,16 @@ import android.support.v7.preference.PreferenceScreen
 import eu.kanade.tachiyomi.lib.ratelimit.RateLimitInterceptor
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.source.ConfigurableSource
-import eu.kanade.tachiyomi.source.model.*
+import eu.kanade.tachiyomi.source.model.Filter
+import eu.kanade.tachiyomi.source.model.FilterList
+import eu.kanade.tachiyomi.source.model.Page
+import eu.kanade.tachiyomi.source.model.SChapter
+import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.ParsedHttpSource
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Locale
+import java.util.concurrent.TimeUnit
 import okhttp3.Headers
 import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
@@ -18,9 +26,13 @@ import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
-import java.util.concurrent.TimeUnit
 
-abstract class WPMangaStream(override val name: String, override val baseUrl: String, override val lang: String) : ConfigurableSource, ParsedHttpSource() {
+abstract class WPMangaStream(
+    override val name: String,
+    override val baseUrl: String,
+    override val lang: String,
+    private val dateFormat: SimpleDateFormat = SimpleDateFormat("MMM d, yyyy", Locale.US)
+) : ConfigurableSource, ParsedHttpSource() {
     override val supportsLatest = true
 
     companion object {
@@ -79,7 +91,6 @@ abstract class WPMangaStream(override val name: String, override val baseUrl: St
         .addNetworkInterceptor(rateLimitInterceptor)
         .build()
 
-
     override fun popularMangaRequest(page: Int): Request {
         return GET("$baseUrl/manga/page/$page/?order=popular", headers)
     }
@@ -131,7 +142,7 @@ abstract class WPMangaStream(override val name: String, override val baseUrl: St
 
     override fun popularMangaFromElement(element: Element): SManga {
         val manga = SManga.create()
-        manga.thumbnail_url = element.select("div.limit img").attr("src")
+        manga.thumbnail_url = element.select("div.limit img").attr("abs:src")
         element.select("div.bsx > a").first().let {
             manga.setUrlWithoutDomain(it.attr("href"))
             manga.title = it.attr("title")
@@ -148,19 +159,13 @@ abstract class WPMangaStream(override val name: String, override val baseUrl: St
 
     override fun mangaDetailsParse(document: Document): SManga {
         val infoElement = document.select("div.spe").first()
-        val descElement = document.select(".infox > div.desc").first()
         val sepName = infoElement.select(".spe > span:contains(Author)").last()
         val manga = SManga.create()
-        manga.author = sepName?.ownText() ?:"N/A"
-        manga.artist = sepName?.ownText() ?:"N/A"
-        val genres = mutableListOf<String>()
-        infoElement.select(".spe > span:nth-child(1) > a").forEach { element ->
-            val genre = element.text()
-            genres.add(genre)
-        }
-        manga.genre = genres.joinToString(", ")
+        manga.author = sepName?.ownText() ?: "N/A"
+        manga.artist = sepName?.ownText() ?: "N/A"
+        manga.genre = infoElement.select(".spe > span:nth-child(1) > a").joinToString { it.text() }
         manga.status = parseStatus(infoElement.select(".spe > span:nth-child(2)").text())
-        manga.description = descElement.select("p").text()
+        manga.description = document.select(".infox > div.desc").first().select("p").text()
         manga.thumbnail_url = document.select(".thumb > img:nth-child(1)").attr("src")
 
         return manga
@@ -173,15 +178,50 @@ abstract class WPMangaStream(override val name: String, override val baseUrl: St
         else -> SManga.UNKNOWN
     }
 
-    override fun chapterListSelector() = "div.bxcl ul li"
+    override fun chapterListSelector() = "div.bxcl ul li, div.cl ul li"
 
     override fun chapterFromElement(element: Element): SChapter {
-        val urlElement = element.select(".lchx > a").first()
+        val urlElement = element.select(".lchx > a, span.leftoff a").first()
         val chapter = SChapter.create()
         chapter.setUrlWithoutDomain(urlElement.attr("href"))
         chapter.name = urlElement.text()
-        chapter.date_upload = 0
+        chapter.date_upload = element.select("span.rightoff, time").firstOrNull()?.text()?.let { parseChapterDate(it) } ?: 0
         return chapter
+    }
+
+    fun parseChapterDate(date: String): Long {
+        return if (date.contains("ago")) {
+            val value = date.split(' ')[0].toInt()
+            when {
+                "min" in date -> Calendar.getInstance().apply {
+                    add(Calendar.MINUTE, value * -1)
+                }.timeInMillis
+                "hour" in date -> Calendar.getInstance().apply {
+                    add(Calendar.HOUR_OF_DAY, value * -1)
+                }.timeInMillis
+                "day" in date -> Calendar.getInstance().apply {
+                    add(Calendar.DATE, value * -1)
+                }.timeInMillis
+                "week" in date -> Calendar.getInstance().apply {
+                    add(Calendar.DATE, value * 7 * -1)
+                }.timeInMillis
+                "month" in date -> Calendar.getInstance().apply {
+                    add(Calendar.MONTH, value * -1)
+                }.timeInMillis
+                "year" in date -> Calendar.getInstance().apply {
+                    add(Calendar.YEAR, value * -1)
+                }.timeInMillis
+                else -> {
+                    0L
+                }
+            }
+        } else {
+            try {
+                dateFormat.parse(date).time
+            } catch (_: Exception) {
+                0L
+            }
+        }
     }
 
     override fun prepareNewChapter(chapter: SChapter, manga: SManga) {
@@ -199,7 +239,7 @@ abstract class WPMangaStream(override val name: String, override val baseUrl: St
         val pages = mutableListOf<Page>()
         var i = 0
         document.select("div#readerarea img").forEach { element ->
-            val url = element.attr("src")
+            val url = element.attr("abs:src")
             i++
             if (url.isNotEmpty()) {
                 pages.add(Page(i, "", url))
@@ -208,7 +248,7 @@ abstract class WPMangaStream(override val name: String, override val baseUrl: St
         return pages
     }
 
-    override fun imageUrlParse(document: Document) = ""
+    override fun imageUrlParse(document: Document): String = throw UnsupportedOperationException("Not used")
 
     override fun imageRequest(page: Page): Request {
         val headers = Headers.Builder()
@@ -226,19 +266,13 @@ abstract class WPMangaStream(override val name: String, override val baseUrl: St
         return GET(getImageUrl(page.imageUrl!!, getShowThumbnail()), headers.build())
     }
 
-    private fun getImageUrl(baseUrl: String, quality: Int): String {
-        var url = baseUrl
-        when(quality){
-            LOW_QUALITY -> {
-                url = url.replace("https://", "")
-                url = "https://images.weserv.nl/?w=300&q=70&url=" + url
-            }
-            MID_QUALITY -> {
-                url = url.replace("https://", "")
-                url = "https://images.weserv.nl/?w=600&q=70&url=" + url
-            }
+    private fun getImageUrl(originalUrl: String, quality: Int): String {
+        val url = originalUrl.substringAfter("//")
+        return when (quality) {
+            LOW_QUALITY -> "https://images.weserv.nl/?w=300&q=70&url=$url"
+            MID_QUALITY -> "https://images.weserv.nl/?w=600&q=70&url=$url"
+            else -> originalUrl
         }
-        return url
     }
 
     private class AuthorFilter : Filter.Text("Author")

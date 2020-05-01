@@ -2,17 +2,23 @@ package eu.kanade.tachiyomi.extension.all.wpmangastream
 
 import android.annotation.SuppressLint
 import eu.kanade.tachiyomi.network.GET
+import eu.kanade.tachiyomi.network.asObservableSuccess
 import eu.kanade.tachiyomi.source.Source
 import eu.kanade.tachiyomi.source.SourceFactory
-import eu.kanade.tachiyomi.source.model.*
+import eu.kanade.tachiyomi.source.model.Filter
+import eu.kanade.tachiyomi.source.model.FilterList
+import eu.kanade.tachiyomi.source.model.Page
+import eu.kanade.tachiyomi.source.model.SChapter
+import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.util.asJsoup
-import okhttp3.*
-import org.json.JSONObject
+import okhttp3.HttpUrl
+import okhttp3.Interceptor
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
-import java.text.ParseException
-import java.text.SimpleDateFormat
-import java.util.*
+import rx.Observable
 
 class WPMangaStreamFactory : SourceFactory {
     override fun createSources(): List<Source> = listOf(
@@ -25,12 +31,19 @@ class WPMangaStreamFactory : SourceFactory {
         KomikIndo(),
         MaidManga(),
         SekteKomik(),
-        MangaSwat()
+        MangaSwat(),
+        MangaRaw()
     )
 }
 
-class SekteKomik() : WPMangaStream("Sekte Komik (WP Manga Stream)", "https://sektekomik.com", "id")
-class Kiryuu : WPMangaStream("Kiryuu (WP Manga Stream)", "https://kiryuu.co", "id")
+class SekteKomik : WPMangaStream("Sekte Komik (WP Manga Stream)", "https://sektekomik.com", "id")
+class Kiryuu : WPMangaStream("Kiryuu (WP Manga Stream)", "https://kiryuu.co", "id") {
+    override fun pageListParse(document: Document): List<Page> {
+        return document.select("div#readerarea img").map { it.attr("abs:src") }
+            .filterNot { it.contains("/.filerun") }
+            .mapIndexed { i, image -> Page(i, "", image) }
+    }
+}
 class KomikAV : WPMangaStream("Komik AV (WP Manga Stream)", "https://komikav.com", "id")
 class KomikStation : WPMangaStream("Komik Station (WP Manga Stream)", "https://komikstation.com", "id")
 class KomikCast : WPMangaStream("Komik Cast (WP Manga Stream)", "https://komikcast.com", "id") {
@@ -112,62 +125,9 @@ class KomikCast : WPMangaStream("Komik Cast (WP Manga Stream)", "https://komikca
         return manga
     }
 
-    override fun chapterListSelector() = "div.cl ul li"
-
-    override fun chapterFromElement(element: Element): SChapter {
-        val urlElement = element.select("a").first()
-        val timeElement = element.select("span.rightoff").first()
-        val chapter = SChapter.create()
-        chapter.setUrlWithoutDomain(urlElement.attr("href"))
-        chapter.name = urlElement.text()
-        chapter.date_upload = parseChapterDate(timeElement.text())
-        return chapter
-    }
-
-    private fun parseChapterDate(date: String): Long {
-        val value = date.split(' ')[0].toInt()
-
-        return when {
-            "mins" in date -> Calendar.getInstance().apply {
-                add(Calendar.MINUTE, value * -1)
-            }.timeInMillis
-            "hours" in date -> Calendar.getInstance().apply {
-                add(Calendar.HOUR_OF_DAY, value * -1)
-            }.timeInMillis
-            "days" in date -> Calendar.getInstance().apply {
-                add(Calendar.DATE, value * -1)
-            }.timeInMillis
-            "weeks" in date -> Calendar.getInstance().apply {
-                add(Calendar.DATE, value * 7 * -1)
-            }.timeInMillis
-            "months" in date -> Calendar.getInstance().apply {
-                add(Calendar.MONTH, value * -1)
-            }.timeInMillis
-            "years" in date -> Calendar.getInstance().apply {
-                add(Calendar.YEAR, value * -1)
-            }.timeInMillis
-            "min" in date -> Calendar.getInstance().apply {
-                add(Calendar.MINUTE, value * -1)
-            }.timeInMillis
-            "hour" in date -> Calendar.getInstance().apply {
-                add(Calendar.HOUR_OF_DAY, value * -1)
-            }.timeInMillis
-            "day" in date -> Calendar.getInstance().apply {
-                add(Calendar.DATE, value * -1)
-            }.timeInMillis
-            "week" in date -> Calendar.getInstance().apply {
-                add(Calendar.DATE, value * 7 * -1)
-            }.timeInMillis
-            "month" in date -> Calendar.getInstance().apply {
-                add(Calendar.MONTH, value * -1)
-            }.timeInMillis
-            "year" in date -> Calendar.getInstance().apply {
-                add(Calendar.YEAR, value * -1)
-            }.timeInMillis
-            else -> {
-                return 0
-            }
-        }
+    override fun pageListParse(document: Document): List<Page> {
+        return document.select("div#readerarea img.size-full")
+            .mapIndexed { i, img -> Page(i, "", img.attr("abs:Src")) }
     }
 
     override fun getFilterList() = FilterList(
@@ -248,27 +208,6 @@ class WestManga : WPMangaStream("West Manga (WP Manga Stream)", "https://westman
     override fun parseStatus(element: String): Int = when {
         element.toLowerCase().contains("publishing") -> SManga.ONGOING
         else -> SManga.UNKNOWN
-    }
-
-    override fun chapterListSelector() = "div.cl ul li"
-
-    override fun chapterFromElement(element: Element): SChapter {
-        val urlElement = element.select(".leftoff > a").first()
-        val chapter = SChapter.create()
-        val timeElement = element.select("span.rightoff").first()
-        chapter.setUrlWithoutDomain(urlElement.attr("href"))
-        chapter.name = urlElement.text()
-        chapter.date_upload = parseChapterDate(timeElement.text())
-        return chapter
-    }
-
-    @SuppressLint("SimpleDateFormat")
-    private fun parseChapterDate(date: String): Long {
-        val sdf = SimpleDateFormat("MMM dd, yyyy")
-        val parse = sdf.parse(date)
-        val cal = Calendar.getInstance()
-        cal.time = parse
-        return cal.timeInMillis
     }
 
     private class SortByFilter : UriPartFilter("Sort By", arrayOf(
@@ -440,61 +379,6 @@ class KomikGo : WPMangaStream("Komik GO (WP Manga Stream)", "https://komikgo.com
 
     override fun chapterListSelector() = "li.wp-manga-chapter"
 
-
-    private fun parseChapterDate(date: String): Long {
-        if (date.contains(",")) {
-            return try {
-                SimpleDateFormat("MMM d, yyyy", Locale.US).parse(date).time
-            } catch (e: ParseException) {
-                0
-            }
-        } else {
-            val value = date.split(' ')[0].toInt()
-
-            return when {
-                "mins" in date -> Calendar.getInstance().apply {
-                    add(Calendar.MINUTE, value * -1)
-                }.timeInMillis
-                "hours" in date -> Calendar.getInstance().apply {
-                    add(Calendar.HOUR_OF_DAY, value * -1)
-                }.timeInMillis
-                "days" in date -> Calendar.getInstance().apply {
-                    add(Calendar.DATE, value * -1)
-                }.timeInMillis
-                "weeks" in date -> Calendar.getInstance().apply {
-                    add(Calendar.DATE, value * 7 * -1)
-                }.timeInMillis
-                "months" in date -> Calendar.getInstance().apply {
-                    add(Calendar.MONTH, value * -1)
-                }.timeInMillis
-                "years" in date -> Calendar.getInstance().apply {
-                    add(Calendar.YEAR, value * -1)
-                }.timeInMillis
-                "min" in date -> Calendar.getInstance().apply {
-                    add(Calendar.MINUTE, value * -1)
-                }.timeInMillis
-                "hour" in date -> Calendar.getInstance().apply {
-                    add(Calendar.HOUR_OF_DAY, value * -1)
-                }.timeInMillis
-                "day" in date -> Calendar.getInstance().apply {
-                    add(Calendar.DATE, value * -1)
-                }.timeInMillis
-                "week" in date -> Calendar.getInstance().apply {
-                    add(Calendar.DATE, value * 7 * -1)
-                }.timeInMillis
-                "month" in date -> Calendar.getInstance().apply {
-                    add(Calendar.MONTH, value * -1)
-                }.timeInMillis
-                "year" in date -> Calendar.getInstance().apply {
-                    add(Calendar.YEAR, value * -1)
-                }.timeInMillis
-                else -> {
-                    return 0
-                }
-            }
-        }
-    }
-
     override fun chapterFromElement(element: Element): SChapter {
         val urlElement = element.select("a").first()
         val chapter = SChapter.create()
@@ -505,16 +389,9 @@ class KomikGo : WPMangaStream("Komik GO (WP Manga Stream)", "https://komikgo.com
     }
 
     override fun pageListParse(document: Document): List<Page> {
-        val pages = mutableListOf<Page>()
-        var i = 0
-        document.select("div.reading-content * img").forEach { element ->
-            val url = element.attr("src")
-            i++
-            if (url.isNotEmpty()) {
-                pages.add(Page(i, "", url))
-            }
+        return document.select("div.reading-content * img").mapIndexed { i, img ->
+            Page(i, "", img.let { if (it.hasAttr("data-src")) it.attr("abs:data-src") else it.attr("abs:src") })
         }
-        return pages
     }
 
     private class TextField(name: String, val key: String) : Filter.Text(name)
@@ -688,27 +565,6 @@ class KomikIndo : WPMangaStream("Komik Indo (WP Manga Stream)", "https://www.kom
         manga.description = document.select("div.rm > span > p:first-child").text()
         manga.thumbnail_url = document.select("div.animeinfo .lm .imgdesc img:first-child").attr("src")
         return manga
-    }
-
-    override fun chapterListSelector() = "div.cl ul li"
-
-    override fun chapterFromElement(element: Element): SChapter {
-        val urlElement = element.select(".leftoff > a").first()
-        val chapter = SChapter.create()
-        val timeElement = element.select("span.rightoff").first()
-        chapter.setUrlWithoutDomain(urlElement.attr("href"))
-        chapter.name = urlElement.text()
-        chapter.date_upload = parseChapterDate(timeElement.text())
-        return chapter
-    }
-
-    @SuppressLint("SimpleDateFormat")
-    private fun parseChapterDate(date: String): Long {
-        val sdf = SimpleDateFormat("MMM dd, yyyy")
-        val parse = sdf.parse(date)
-        val cal = Calendar.getInstance()
-        cal.time = parse
-        return cal.timeInMillis
     }
 
     private class GenreListFilter : UriPartFilter("Genre", arrayOf(
@@ -898,30 +754,11 @@ class MaidManga : WPMangaStream("Maid Manga (WP Manga Stream)", "https://www.mai
 
     override fun chapterListParse(response: Response): List<SChapter> {
         val document = response.asJsoup()
-        val chapters = mutableListOf<SChapter>()
-        document.select(chapterListSelector()).map { chapters.add(chapterFromElement(it)) }
+        val chapters = document.select(chapterListSelector()).map { chapterFromElement(it) }
         // Add date for latest chapter only
-        document.select("script.yoast-schema-graph").html()
-            .let {
-                val date = JSONObject(it).getJSONArray("@graph").getJSONObject(3).getString("dateModified")
-                chapters[0].date_upload = parseDate(date)
-            }
+        document.select("ul.anf span:has(b:contains(release date))").text().substringAfter(": ")
+            .let { chapters[0].date_upload = parseChapterDate(it) }
         return chapters
-    }
-
-    @SuppressLint("SimpleDateFormat")
-    private fun parseDate(date: String): Long {
-        return SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX").parse(date).time
-    }
-
-    override fun chapterListSelector() = "ul#chapter_list li a:contains(chapter)"
-
-    override fun chapterFromElement(element: Element): SChapter {
-        val urlElement = element.select("a:contains(chapter)")
-        val chapter = SChapter.create()
-        chapter.url = urlElement.attr("href")
-        chapter.name = urlElement.text()
-        return chapter
     }
 
     override fun pageListRequest(chapter: SChapter): Request {
@@ -939,8 +776,6 @@ class MaidManga : WPMangaStream("Maid Manga (WP Manga Stream)", "https://www.mai
         }
         return pages
     }
-
-    override fun imageUrlParse(document: Document): String = throw  UnsupportedOperationException("Not used")
 
     override fun getFilterList() = FilterList(
         Filter.Header("You can combine filter."),
@@ -970,7 +805,7 @@ class MaidManga : WPMangaStream("Maid Manga (WP Manga Stream)", "https://www.mai
 }
 
 class MangaSwat : WPMangaStream("MangaSwat", "https://mangaswat.com", "ar") {
-    private class sucuri(): Interceptor {
+    private class Sucuri : Interceptor {
         override fun intercept(chain: Interceptor.Chain): Response {
             val originalRequest = chain.request()
             val response = chain.proceed(originalRequest)
@@ -978,16 +813,12 @@ class MangaSwat : WPMangaStream("MangaSwat", "https://mangaswat.com", "ar") {
             return response
         }
     }
-    override val client: OkHttpClient = super.client.newBuilder().addInterceptor(sucuri()).build()
-    
-    //Popular
-    //Latest
-    //Search
-    //Details
+    override val client: OkHttpClient = super.client.newBuilder().addInterceptor(Sucuri()).build()
+
     override fun mangaDetailsParse(document: Document): SManga = SManga.create().apply {
         thumbnail_url = document.select("div.thumb img.lazyload").attr("data-src")
         title = document.select("div.infox h1").text()
-        genre = document.select("div.spe [rel=tag]").map { it.text() }.joinToString(", ")
+        genre = document.select("div.spe [rel=tag]").joinToString(", ") { it.text() }
         status = when (document.select("span:contains(الحالة)").text().substringAfter(":").trim()) {
             "Ongoing" -> SManga.ONGOING
             "Completed" -> SManga.COMPLETED
@@ -997,18 +828,48 @@ class MangaSwat : WPMangaStream("MangaSwat", "https://mangaswat.com", "ar") {
         artist = author
         description = document.select("div[itemprop=articleBody]").text()
     }
-
-    //Chapters
-    //Pages and Images
     override fun pageListRequest(chapter: SChapter): Request {
-        return GET(baseUrl + chapter.url + "?/", headers) //Bypass "linkvertise" ads
+        return GET(baseUrl + chapter.url + "?/", headers) // Bypass "linkvertise" ads
     }
     override fun pageListParse(document: Document): List<Page> = mutableListOf<Page>().apply {
         document.select("div#readerarea img[data-src]").forEachIndexed { index, element ->
-            add(Page(index,"",element.attr("data-src")))
+            add(Page(index, "", element.attr("data-src")))
         }
     }
     override fun imageRequest(page: Page): Request {
-        return GET( page.imageUrl!! , headers)
+        return GET(page.imageUrl!!, headers)
     }
+}
+
+class MangaRaw : WPMangaStream("Manga Raw", "https://mangaraw.org", "ja") {
+    override fun popularMangaRequest(page: Int): Request = GET("$baseUrl/search?order=popular&page=$page", headers)
+    override fun popularMangaSelector() = "div.bsx"
+    override fun popularMangaFromElement(element: Element): SManga {
+        return SManga.create().apply {
+            element.select("div.bigor > a").let {
+                setUrlWithoutDomain(it.attr("href"))
+                title = it.text()
+            }
+            thumbnail_url = element.select("img").attr("abs:src")
+        }
+    }
+    override fun popularMangaNextPageSelector() = "a[rel=next]"
+    override fun latestUpdatesRequest(page: Int): Request = GET("$baseUrl/search?order=update&page=$page", headers)
+    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request =
+        GET("$baseUrl/search?s=$query&page=$page")
+    override fun searchMangaFromElement(element: Element): SManga = popularMangaFromElement(element)
+    override fun fetchPageList(chapter: SChapter): Observable<List<Page>> {
+        return client.newCall(pageListRequest(chapter))
+            .asObservableSuccess()
+            .map { response ->
+                pageListParse(response, baseUrl + chapter.url.removeSuffix("/"))
+            }
+    }
+    private fun pageListParse(response: Response, chapterUrl: String): List<Page> {
+        return response.asJsoup().select("span.page-link").first().ownText().substringAfterLast(" ").toInt()
+            .let { lastNum -> IntRange(1, lastNum) }
+            .map { num -> Page(num, "$chapterUrl/$num") }
+    }
+    override fun imageUrlParse(document: Document): String = document.select("a.img-block img").attr("abs:src")
+    override fun getFilterList(): FilterList = FilterList()
 }

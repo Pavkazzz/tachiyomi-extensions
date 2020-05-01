@@ -1,6 +1,5 @@
 package eu.kanade.tachiyomi.extension.zh.bh3
 
-import android.util.Log
 import com.github.salomonbrys.kotson.float
 import com.github.salomonbrys.kotson.get
 import com.github.salomonbrys.kotson.int
@@ -8,16 +7,19 @@ import com.github.salomonbrys.kotson.string
 import com.google.gson.JsonElement
 import com.google.gson.JsonParser
 import eu.kanade.tachiyomi.network.GET
-import eu.kanade.tachiyomi.source.model.*
+import eu.kanade.tachiyomi.source.model.FilterList
+import eu.kanade.tachiyomi.source.model.Page
+import eu.kanade.tachiyomi.source.model.SChapter
+import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.ParsedHttpSource
 import eu.kanade.tachiyomi.util.asJsoup
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.util.concurrent.TimeUnit
 import okhttp3.OkHttpClient
 import okhttp3.Response
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
-import java.text.SimpleDateFormat
-import java.util.*
-import java.util.concurrent.TimeUnit
 
 class BH3 : ParsedHttpSource() {
 
@@ -33,20 +35,20 @@ class BH3 : ParsedHttpSource() {
         .build()!!
 
     override fun popularMangaSelector() = "a[href*=book]"
-    override fun latestUpdatesSelector() = throw Exception ("Not Used")
-    override fun searchMangaSelector() = throw Exception ("Not Used")
-    override fun chapterListSelector() = throw Exception ("Not Used")
+    override fun latestUpdatesSelector() = throw Exception("Not Used")
+    override fun searchMangaSelector() = throw Exception("Not Used")
+    override fun chapterListSelector() = throw Exception("Not Used")
 
     override fun popularMangaNextPageSelector() = "none"
     override fun latestUpdatesNextPageSelector() = "none"
     override fun searchMangaNextPageSelector() = "none"
 
     override fun popularMangaRequest(page: Int) = GET("$baseUrl/book", headers)
-    override fun latestUpdatesRequest(page: Int) = throw Exception ("Not Used")
-    override fun searchMangaRequest(page: Int, query: String, filters: FilterList) = throw Exception ("No search")
+    override fun latestUpdatesRequest(page: Int) = throw Exception("Not Used")
+    override fun searchMangaRequest(page: Int, query: String, filters: FilterList) = throw Exception("No search")
 
-    //override fun mangaDetailsRequest(manga: SManga) = GET(baseUrl + manga.url, headers)
-    //override fun pageListRequest(chapter: SChapter) = GET(baseUrl + chapter.url, headers)
+    // override fun mangaDetailsRequest(manga: SManga) = GET(baseUrl + manga.url, headers)
+    // override fun pageListRequest(chapter: SChapter) = GET(baseUrl + chapter.url, headers)
     override fun chapterListRequest(manga: SManga) = GET(baseUrl + manga.url + "/get_chapter", headers)
 
     override fun popularMangaFromElement(element: Element) = mangaFromElement(element)
@@ -55,7 +57,7 @@ class BH3 : ParsedHttpSource() {
 
     private fun mangaFromElement(element: Element): SManga {
         val manga = SManga.create()
-        manga.url = element.select("a").attr("href")
+        manga.url = "/book/" + element.select("div.container").attr("id")
         manga.title = element.select("div.container-title").text().trim()
         manga.thumbnail_url = element.select("img").attr("abs:src")
         return manga
@@ -81,7 +83,7 @@ class BH3 : ParsedHttpSource() {
     }
 
     private fun parseDate(date: String): Long {
-        return SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US ).parse(date).time
+        return SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).parse(date).time
     }
 
     override fun mangaDetailsParse(document: Document): SManga {
@@ -99,8 +101,6 @@ class BH3 : ParsedHttpSource() {
         }
     }
 
-    override fun pageListParse(document: Document)= throw Exception("Not Used")
+    override fun pageListParse(document: Document) = throw Exception("Not Used")
     override fun imageUrlParse(document: Document) = throw Exception("Not Used")
-
 }
-

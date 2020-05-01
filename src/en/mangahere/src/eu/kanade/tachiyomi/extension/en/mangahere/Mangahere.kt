@@ -2,16 +2,24 @@ package eu.kanade.tachiyomi.extension.en.mangahere
 
 import com.squareup.duktape.Duktape
 import eu.kanade.tachiyomi.network.GET
-import eu.kanade.tachiyomi.source.model.*
+import eu.kanade.tachiyomi.source.model.Filter
+import eu.kanade.tachiyomi.source.model.FilterList
+import eu.kanade.tachiyomi.source.model.Page
+import eu.kanade.tachiyomi.source.model.SChapter
+import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.ParsedHttpSource
 import eu.kanade.tachiyomi.util.asJsoup
-import okhttp3.*
-import org.jsoup.nodes.Document
-import org.jsoup.nodes.Element
 import java.text.ParseException
 import java.text.SimpleDateFormat
-import java.util.*
-import kotlin.collections.ArrayList
+import java.util.Calendar
+import java.util.Locale
+import okhttp3.Cookie
+import okhttp3.CookieJar
+import okhttp3.HttpUrl
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import org.jsoup.nodes.Document
+import org.jsoup.nodes.Element
 
 class Mangahere : ParsedHttpSource() {
 
@@ -25,8 +33,8 @@ class Mangahere : ParsedHttpSource() {
 
     override val supportsLatest = true
 
-    override val client = super.client.newBuilder()
-            .cookieJar(object : CookieJar{
+    override val client: OkHttpClient = super.client.newBuilder()
+            .cookieJar(object : CookieJar {
                 override fun saveFromResponse(url: HttpUrl, cookies: MutableList<Cookie>) {}
                 override fun loadForRequest(url: HttpUrl): MutableList<Cookie> {
                     return ArrayList<Cookie>().apply {
@@ -37,7 +45,6 @@ class Mangahere : ParsedHttpSource() {
                                 .value("1")
                                 .build()) }
                 }
-
             })
             .build()
 
@@ -77,7 +84,7 @@ class Mangahere : ParsedHttpSource() {
         val url = HttpUrl.parse("$baseUrl/search")!!.newBuilder()
 
         filters.forEach {
-            when(it) {
+            when (it) {
 
                 is TypeList -> {
                     url.addEncodedQueryParameter("type", types[it.values[it.state]].toString())
@@ -96,9 +103,8 @@ class Mangahere : ParsedHttpSource() {
                     }
 
                     url.addEncodedQueryParameter("genres", includeGenres.joinToString(","))
-                            .addEncodedQueryParameter("nogenres", excludeGenres.joinToString(","))
+                        .addEncodedQueryParameter("nogenres", excludeGenres.joinToString(","))
                 }
-
             }
         }
 
@@ -107,13 +113,13 @@ class Mangahere : ParsedHttpSource() {
                 .addEncodedQueryParameter("sort", null)
                 .addEncodedQueryParameter("stype", 1.toString())
                 .addEncodedQueryParameter("name", null)
-                .addEncodedQueryParameter("author_method","cw")
+                .addEncodedQueryParameter("author_method", "cw")
                 .addEncodedQueryParameter("author", null)
                 .addEncodedQueryParameter("artist_method", "cw")
                 .addEncodedQueryParameter("artist", null)
-                .addEncodedQueryParameter("rating_method","eq")
-                .addEncodedQueryParameter("rating",null)
-                .addEncodedQueryParameter("released_method","eq")
+                .addEncodedQueryParameter("rating_method", "eq")
+                .addEncodedQueryParameter("rating", null)
+                .addEncodedQueryParameter("released_method", "eq")
                 .addEncodedQueryParameter("released", null)
 
         return GET(url.toString(), headers)
@@ -167,7 +173,7 @@ class Mangahere : ParsedHttpSource() {
     }
 
     private fun parseChapterDate(date: String): Long {
-        return if ("Today" in date || " ago" in date){
+        return if ("Today" in date || " ago" in date) {
             Calendar.getInstance().apply {
                 set(Calendar.HOUR_OF_DAY, 0)
                 set(Calendar.MINUTE, 0)
@@ -191,24 +197,122 @@ class Mangahere : ParsedHttpSource() {
         }
     }
 
-    override fun pageListRequest(chapter: SChapter): Request {
-        return GET("$baseUrl/${chapter.url}".replace("www","m"), headers)
-    }
+    override fun pageListParse(document: Document): List<Page> {
+        val bar = document.select("script[src*=chapter_bar]")
+        val duktape = Duktape.create()
 
-    override fun pageListParse(document: Document): List<Page> =  mutableListOf<Page>().apply {
-        document.select("select option").forEach {
-            add(Page(size,"https:${it.attr("value")}"))
+        /*
+            function to drop last imageUrl if it's broken/unneccesary, working imageUrls are incremental (e.g. t001, t002, etc); if the difference between
+            the last two isn't 1 or doesn't have an Int at the end of the last imageUrl's filename, drop last Page
+        */
+        fun List<Page>.dropLastIfBroken(): List<Page> {
+            val list = this.takeLast(2).map { page ->
+                try {
+                    page.imageUrl!!.substringBeforeLast(".").substringAfterLast("/").takeLast(2).toInt()
+                } catch (_: NumberFormatException) {
+                    return this.dropLast(1)
+                }
+            }
+            return when {
+                list[0] == 0 && 100 - list[1] == 1 -> this
+                list[1] - list[0] == 1 -> this
+                else -> this.dropLast(1)
+            }
         }
+
+        // if-branch is for webtoon reader, else is for page-by-page
+        return if (bar.isNotEmpty()) {
+            val script = document.select("script:containsData(function(p,a,c,k,e,d))").html().removePrefix("eval")
+            val deobfuscatedScript = duktape.evaluate(script).toString()
+            val urls = deobfuscatedScript.substringAfter("newImgs=['").substringBefore("'];").split("','")
+            duktape.close()
+
+            urls.mapIndexed { index, s -> Page(index, "", "https:$s") }
+        } else {
+            val html = document.html()
+            val link = document.location()
+
+            var secretKey = extractSecretKey(html, duktape)
+
+            val chapterIdStartLoc = html.indexOf("chapterid")
+            val chapterId = html.substring(
+                    chapterIdStartLoc + 11,
+                    html.indexOf(";", chapterIdStartLoc)).trim()
+
+            val chapterPagesElement = document.select(".pager-list-left > span").first()
+            val pagesLinksElements = chapterPagesElement.select("a")
+            val pagesNumber = pagesLinksElements[pagesLinksElements.size - 2].attr("data-page").toInt()
+
+            val pageBase = link.substring(0, link.lastIndexOf("/"))
+
+            IntRange(1, pagesNumber).map { i ->
+
+                val pageLink = "$pageBase/chapterfun.ashx?cid=$chapterId&page=$i&key=$secretKey"
+
+                var responseText = ""
+
+                for (tr in 1..3) {
+
+                    val request = Request.Builder()
+                            .url(pageLink)
+                            .addHeader("Referer", link)
+                            .addHeader("Accept", "*/*")
+                            .addHeader("Accept-Language", "en-US,en;q=0.9")
+                            .addHeader("Connection", "keep-alive")
+                            .addHeader("Host", "www.mangahere.cc")
+                            .addHeader("User-Agent", System.getProperty("http.agent") ?: "")
+                            .addHeader("X-Requested-With", "XMLHttpRequest")
+                            .build()
+
+                    val response = client.newCall(request).execute()
+                    responseText = response.body()!!.string()
+
+                    if (responseText.isNotEmpty())
+                        break
+                    else
+                        secretKey = ""
+                }
+
+                val deobfuscatedScript = duktape.evaluate(responseText.removePrefix("eval")).toString()
+
+                val baseLinkStartPos = deobfuscatedScript.indexOf("pix=") + 5
+                val baseLinkEndPos = deobfuscatedScript.indexOf(";", baseLinkStartPos) - 1
+                val baseLink = deobfuscatedScript.substring(baseLinkStartPos, baseLinkEndPos)
+
+                val imageLinkStartPos = deobfuscatedScript.indexOf("pvalue=") + 9
+                val imageLinkEndPos = deobfuscatedScript.indexOf("\"", imageLinkStartPos)
+                val imageLink = deobfuscatedScript.substring(imageLinkStartPos, imageLinkEndPos)
+
+                Page(i - 1, "", "https:$baseLink$imageLink")
+            }
+        }
+            .dropLastIfBroken()
+            .also { duktape.close() }
     }
 
-    override fun imageUrlParse(document: Document): String {
-        return document.select("img#image").attr("src")
+    private fun extractSecretKey(html: String, duktape: Duktape): String {
+
+        val secretKeyScriptLocation = html.indexOf("eval(function(p,a,c,k,e,d)")
+        val secretKeyScriptEndLocation = html.indexOf("</script>", secretKeyScriptLocation)
+        val secretKeyScript = html.substring(secretKeyScriptLocation, secretKeyScriptEndLocation).removePrefix("eval")
+
+        val secretKeyDeobfuscatedScript = duktape.evaluate(secretKeyScript).toString()
+
+        val secretKeyStartLoc = secretKeyDeobfuscatedScript.indexOf("'")
+        val secretKeyEndLoc = secretKeyDeobfuscatedScript.indexOf(";")
+
+        val secretKeyResultScript = secretKeyDeobfuscatedScript.substring(
+                secretKeyStartLoc, secretKeyEndLoc)
+
+        return duktape.evaluate(secretKeyResultScript).toString()
     }
+
+    override fun imageUrlParse(document: Document): String = throw UnsupportedOperationException("Not used")
 
     private class Genre(title: String, val id: Int) : Filter.TriState(title)
 
-    private class TypeList(types: Array<String>) : Filter.Select<String>("Type", types,0)
-    private class CompletionList(completions: Array<String>) : Filter.Select<String>("Completed series", completions,0)
+    private class TypeList(types: Array<String>) : Filter.Select<String>("Type", types, 0)
+    private class CompletionList(completions: Array<String>) : Filter.Select<String>("Completed series", completions, 0)
     private class GenreList(genres: List<Genre>) : Filter.Group<Genre>("Genres", genres)
 
     override fun getFilterList() = FilterList(
@@ -224,7 +328,7 @@ class Mangahere : ParsedHttpSource() {
             "Any" to 0
     )
 
-    private val completions = arrayOf("Either","No","Yes")
+    private val completions = arrayOf("Either", "No", "Yes")
 
     private val genres = arrayListOf(
             Genre("Action", 1),
@@ -264,5 +368,4 @@ class Mangahere : ParsedHttpSource() {
             Genre("Shotacon", 35),
             Genre("Lolicon", 36)
     )
-
 }

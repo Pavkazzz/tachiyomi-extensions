@@ -1,9 +1,14 @@
 package eu.kanade.tachiyomi.extension.ar.teamx
 
 import eu.kanade.tachiyomi.network.GET
-import eu.kanade.tachiyomi.source.model.*
+import eu.kanade.tachiyomi.source.model.FilterList
+import eu.kanade.tachiyomi.source.model.MangasPage
+import eu.kanade.tachiyomi.source.model.Page
+import eu.kanade.tachiyomi.source.model.SChapter
+import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.ParsedHttpSource
 import eu.kanade.tachiyomi.util.asJsoup
+import java.util.concurrent.TimeUnit
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -20,7 +25,10 @@ class TeamX : ParsedHttpSource() {
 
     override val supportsLatest = true
 
-    override val client: OkHttpClient = network.cloudflareClient
+    override val client: OkHttpClient = network.cloudflareClient.newBuilder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .build()
 
     // Popular
 
@@ -36,7 +44,8 @@ class TeamX : ParsedHttpSource() {
         return SManga.create().apply {
             title = element.select(titleSelector).text()
             setUrlWithoutDomain(element.select("a").first().attr("href"))
-            thumbnail_url = element.select("img").first().attr("abs:data-src")
+            thumbnail_url = element.select("img").let { if (it.hasAttr("data-src"))
+                it.attr("abs:data-src") else it.attr("abs:src") }
         }
     }
 
@@ -97,7 +106,8 @@ class TeamX : ParsedHttpSource() {
                 title = info.select("div.col-md-9").text()
                 description = info.select("div.story p").text()
                 genre = info.select("div.genre a").joinToString { it.text() }
-                thumbnail_url = info.select("img").attr("abs:data-src")
+                thumbnail_url = info.select("img").let { if (it.hasAttr("data-src"))
+                    it.attr("abs:data-src") else it.attr("abs:src") }
             }
         }
     }
@@ -118,12 +128,12 @@ class TeamX : ParsedHttpSource() {
 
     override fun pageListParse(document: Document): List<Page> {
         return document.select("div#translationPageall img").mapIndexed { i, img ->
-            Page(i, "", img.attr("abs:data-src"))
+            Page(i, "", img.let { if (it.hasAttr("data-src"))
+                it.attr("abs:data-src") else it.attr("abs:src") })
         }
     }
 
     override fun imageUrlParse(document: Document): String = throw UnsupportedOperationException("Not used")
 
     override fun getFilterList() = FilterList()
-
 }

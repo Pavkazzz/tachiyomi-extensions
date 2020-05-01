@@ -1,17 +1,21 @@
 package eu.kanade.tachiyomi.extension.vi.hentaivn
 
 import eu.kanade.tachiyomi.network.GET
-import eu.kanade.tachiyomi.source.model.*
+import eu.kanade.tachiyomi.source.model.Filter
+import eu.kanade.tachiyomi.source.model.FilterList
+import eu.kanade.tachiyomi.source.model.Page
+import eu.kanade.tachiyomi.source.model.SChapter
+import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.ParsedHttpSource
+import java.text.ParseException
+import java.text.SimpleDateFormat
+import java.util.Locale
+import okhttp3.Headers
 import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
-import java.text.ParseException
-import java.text.SimpleDateFormat
-import java.util.Locale
-
 
 class HentaiVN : ParsedHttpSource() {
 
@@ -20,6 +24,7 @@ class HentaiVN : ParsedHttpSource() {
     override val name = "HentaiVN"
     override val supportsLatest = true
     override val client: OkHttpClient = network.cloudflareClient
+    override fun headersBuilder(): Headers.Builder = super.headersBuilder().add("Referer", baseUrl)
 
     private val dateFormat = SimpleDateFormat("dd/MM/yyyy", Locale.ENGLISH)
 
@@ -88,11 +93,6 @@ class HentaiVN : ParsedHttpSource() {
             pages.add(Page(i, pageUrl, e.attr("abs:src")))
         }
         return pages
-    }
-
-    override fun imageRequest(page: Page): Request {
-        val imgHeaders = headersBuilder().add("Referer", page.url).build()
-        return GET(page.imageUrl!!, imgHeaders)
     }
 
     override fun popularMangaFromElement(element: Element) = latestUpdatesFromElement(element)
@@ -361,5 +361,4 @@ class HentaiVN : ParsedHttpSource() {
             TransGroup("Depressed Lolicons Squad - DLS", "52"),
             TransGroup("Heaven Of The Fuck", "53")
     )
-
 }
