@@ -41,7 +41,7 @@ class MangaKawaii : ParsedHttpSource() {
         GET("$baseUrl/filterLists?page=$page&sortBy=views&asc=false", headersBuilder().add("X-Requested-With", "XMLHttpRequest").build())
     override fun latestUpdatesRequest(page: Int) = GET(baseUrl, headers)
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
-        val uri = Uri.parse("$baseUrl/search2").buildUpon()
+        val uri = Uri.parse("$baseUrl/search").buildUpon()
             .appendQueryParameter("query", query)
         return GET(uri.toString(), headers)
     }
@@ -69,7 +69,7 @@ class MangaKawaii : ParsedHttpSource() {
         val chapter = SChapter.create()
         chapter.url = element.select("a.list-item__title").attr("href")
         chapter.name = element.select("a.list-item__title").text().trim()
-        chapter.chapter_number = element.select("a.list-item__title").text().substringAfter("Chapitre").replace(",", ".").trim().toFloat()
+        chapter.chapter_number = element.select("a.list-item__title").text().substringAfter("Chapitre").replace(Regex("""[,-]"""), ".").trim().toFloatOrNull() ?: 0F
         chapter.date_upload = parseDate(element.select("div.chapter-item__date").text())
         return chapter
     }
