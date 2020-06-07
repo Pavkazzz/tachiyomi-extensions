@@ -239,9 +239,12 @@ class Remanga : ConfigurableSource, HttpSource() {
 
     private fun chapterName(book: BookDto): String {
         val chapterId = if (book.chapter % 1 == 0f) book.chapter.toInt() else book.chapter
-        var chapterName = "${book.tome} - $chapterId"
-        if (book.name.isNotBlank() && chapterName != chapterName) {
-            chapterName += "- $chapterName"
+        var chapterName = "Том.${book.tome} Гл.$chapterId "
+        if (book.name.isNotBlank()) {
+            if (chapterName.isNotEmpty()) {
+                chapterName += "-"
+            }
+            chapterName += " ${book.name}"
         }
         return chapterName
     }
@@ -255,7 +258,7 @@ class Remanga : ConfigurableSource, HttpSource() {
                 url = "/api/titles/chapters/${chapter.id}"
                 date_upload = parseDate(chapter.upload_date)
             }
-        }.sortedByDescending { it.chapter_number }
+        }
     }
 
     override fun imageUrlParse(response: Response): String = ""
