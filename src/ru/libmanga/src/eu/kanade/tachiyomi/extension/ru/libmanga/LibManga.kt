@@ -4,12 +4,9 @@ import android.app.Application
 import android.content.SharedPreferences
 import android.support.v7.preference.ListPreference
 import android.support.v7.preference.PreferenceScreen
-import android.util.Base64.decode as base64Decode
 import com.github.salomonbrys.kotson.array
 import com.github.salomonbrys.kotson.get
-import com.github.salomonbrys.kotson.int
 import com.github.salomonbrys.kotson.nullArray
-import com.github.salomonbrys.kotson.nullInt
 import com.github.salomonbrys.kotson.nullString
 import com.github.salomonbrys.kotson.obj
 import com.github.salomonbrys.kotson.string
@@ -57,18 +54,26 @@ class LibManga : ConfigurableSource, HttpSource() {
 
     override fun headersBuilder() = Headers.Builder().apply {
         add("User-Agent", "Mozilla/5.0 (Windows NT 6.3; WOW64)")
-        add("Accept", "*/*")
+        add("Accept", "image/webp,*/*;q=0.8")
     }
 
     private val jsonParser = JsonParser()
 
     private var server: String? = preferences.getString(SERVER_PREF, null)
 
+    private val defaultServer = "https://img2.emanga.ru"
+
+    private val servers = mapOf(
+        "secondary" to "https://img2.emanga.ru",
+        "fourth" to "https://img4.imgslib.ru",
+        "compress" to "https://img3.ranobelib.me"
+    )
+
     override fun setupPreferenceScreen(screen: androidx.preference.PreferenceScreen) {
         val serverPref = androidx.preference.ListPreference(screen.context).apply {
             key = SERVER_PREF
             title = SERVER_PREF_Title
-            entries = arrayOf("Основной", "Второй (тестовый)", "Сжатия (эконом трафика)")
+            entries = arrayOf("Основной", "Второй (тестовый)", "Третий (эконом трафика)")
             entryValues = arrayOf("secondary", "fourth", "compress")
             summary = "%s"
 
@@ -85,7 +90,7 @@ class LibManga : ConfigurableSource, HttpSource() {
         val serverPref = ListPreference(screen.context).apply {
             key = SERVER_PREF
             title = SERVER_PREF_Title
-            entries = arrayOf("Основной", "Второй (тестовый)", "Сжатия (эконом трафика)")
+            entries = arrayOf("Основной", "Второй (тестовый)", "Третий (эконом трафика)")
             entryValues = arrayOf("secondary", "fourth", "compress")
             summary = "%s"
 
@@ -96,6 +101,10 @@ class LibManga : ConfigurableSource, HttpSource() {
         }
 
         screen.addPreference(serverPref)
+    }
+
+    private fun imageServerUrl(): String {
+        return this.servers.getOrDefault(this.server, this.defaultServer)
     }
 
     override fun latestUpdatesRequest(page: Int) = GET(baseUrl, headers)
@@ -169,11 +178,10 @@ class LibManga : ConfigurableSource, HttpSource() {
     }
 
     private fun popularMangaFromElement(el: JsonElement) = SManga.create().apply {
+        val slug = el["slug"].string
         title = el["name"].string
-        thumbnail_url = "$baseUrl/uploads/" + if (el["cover"].nullInt != null)
-            "cover/${el["slug"].string}/cover/cover_250x350.jpg" else
-            "no-image.png"
-        url = "/" + el["slug"].string
+        thumbnail_url = "$baseUrl/uploads/cover/$slug/cover/cover_250x350.jpg"
+        url = "/$slug"
     }
 
     override fun mangaDetailsParse(response: Response): SManga {
@@ -192,7 +200,8 @@ class LibManga : ConfigurableSource, HttpSource() {
             rawCategory.isNotBlank() -> rawCategory.toLowerCase()
             else -> "манга"
         }
-        val genres = body.select(".info-list__row:has(strong:contains(Жанры)) > a").text()
+
+        val genres = body.select(".info-list__row:has(strong:contains(Жанры)) > a").map { it.text() }
         manga.title = document.select(".manga-title small").text().substringBefore("/").trim()
         manga.thumbnail_url = body.select(".manga__cover").attr("src")
         manga.author = body.select(".info-list__row:nth-child(2) > a").text()
@@ -206,7 +215,7 @@ class LibManga : ConfigurableSource, HttpSource() {
             "завершен" -> SManga.COMPLETED
             else -> SManga.UNKNOWN
         }
-        manga.genre = genres.split(",").plusElement(category).joinToString { it.trim() }
+        manga.genre = genres.plusElement(category).joinToString { it.trim() }
         manga.description = body.select(".info-desc__content").text()
         return manga
     }
@@ -222,22 +231,10 @@ class LibManga : ConfigurableSource, HttpSource() {
     private fun chapterFromElement(element: Element): SChapter {
 
         val chapter = SChapter.create()
-
-        val chapterLink = element.select("div.chapter-item__name > a").first()
-        if (chapterLink != null) {
-            chapter.setUrlWithoutDomain(chapterLink.attr("href"))
-        } else {
-            // Found multiple translate. Get first one for now
-            val volume = element.attr("data-volume")
-            val number = element.attr("data-number")
-            val teams = jsonParser.parse(element.attr("data-teams"))
-            val team = teams[0]["slug"].nullString
-            val baseUrl = "${element.baseUri()}/v$volume/c$number"
-            val url = if (team != null) "$baseUrl/$team" else baseUrl
-
-            chapter.setUrlWithoutDomain(url)
-        }
-
+        val id = element.attr("data-id")
+        val slug = element.baseUri().replace("$baseUrl/", "")
+        val url = "/download/$id?slug=$slug"
+        chapter.setUrlWithoutDomain(url)
         chapter.name = element.select("div.chapter-item__name").first().text()
         chapter.date_upload = SimpleDateFormat("dd.MM.yyyy", Locale.US)
             .parse(element.select("div.chapter-item__date").text()).time
@@ -252,36 +249,16 @@ class LibManga : ConfigurableSource, HttpSource() {
     }
 
     override fun pageListParse(response: Response): List<Page> {
-        val document = response.asJsoup()
-        val chapInfo = document
-            .select("script:containsData(window.__info)")
-            .first()
-            .html()
-            .replace("window.__info = ", "")
-            .replace(";", "")
-
-        val chapInfoJson = jsonParser.parse(chapInfo).obj
-        val servers = chapInfoJson["servers"].asJsonObject
-        val defaultServer: String = chapInfoJson["img"]["server"].string
-        val imgUrl: String = chapInfoJson["img"]["url"].string
-
-        val serverToUse = if (this.server == null) defaultServer else this.server
-        val imageServerUrl: String = servers[serverToUse].string
-
-        // Get pages
-        val baseStr = document.select("span.pp")
-            .first()
-            .html()
-            .replace("<!--", "")
-            .replace("-->", "")
-            .trim()
-
-        val decodedArr = base64Decode(baseStr, android.util.Base64.DEFAULT)
-        val pagesJson = jsonParser.parse(String(decodedArr)).array
+        val body = response.body()!!.string()
+        val slug = response.request().url().queryParameter("slug")
+        val json = jsonParser.parse(body)
+        val images = json["images"].array
+        val chapterslug = json["chapter"]["slug"].string
 
         val pages = mutableListOf<Page>()
-        pagesJson.forEach { page ->
-            pages.add(Page(page["p"].int, "", imageServerUrl + imgUrl + page["u"].string))
+        images.forEachIndexed { index, page ->
+            val url = "${this.imageServerUrl()}/manga/$slug/chapters/$chapterslug/${page.string}"
+            pages.add(Page(index, "", url))
         }
 
         return pages

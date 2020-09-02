@@ -29,7 +29,7 @@ class Readmanga : ParsedHttpSource() {
 
     override val name = "Readmanga"
 
-    override val baseUrl = "https://readmanga.me"
+    override val baseUrl = "https://readmanga.live"
 
     override val lang = "ru"
 
@@ -83,7 +83,7 @@ class Readmanga : ParsedHttpSource() {
                 }
             }
         }
-        if (!query.isEmpty()) {
+        if (query.isNotEmpty()) {
             url.addQueryParameter("q", query)
         }
         return GET(url.toString().replace("=%3D", "="), headers)
@@ -196,7 +196,7 @@ class Readmanga : ParsedHttpSource() {
     override fun pageListParse(response: Response): List<Page> {
         val html = response.body()!!.string()
         val beginIndex = html.indexOf("rm_h.init( [")
-        val endIndex = html.indexOf("], 0, false);", beginIndex)
+        val endIndex = html.indexOf(");", beginIndex)
         val trimmedHtml = html.substring(beginIndex, endIndex)
 
         val p = Pattern.compile("'.*?','.*?',\".*?\"")

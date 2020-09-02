@@ -14,9 +14,10 @@ import eu.kanade.tachiyomi.util.asJsoup
 import java.text.ParseException
 import java.text.SimpleDateFormat
 import java.util.Calendar
-import java.util.Date
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+import kotlin.math.absoluteValue
+import kotlin.random.Random
 import okhttp3.CacheControl
 import okhttp3.FormBody
 import okhttp3.Headers
@@ -43,6 +44,12 @@ abstract class Madara(
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
 
+    // helps with cloudflare for some sources, makes it worse for others; override with empty string if the latter is true
+    protected open val userAgentRandomizer = " ${Random.nextInt().absoluteValue}"
+
+    override fun headersBuilder(): Headers.Builder = Headers.Builder()
+        .add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:77.0) Gecko/20100101 Firefox/78.0$userAgentRandomizer")
+
     // Popular Manga
 
     override fun popularMangaSelector() = "div.page-item-detail"
@@ -54,7 +61,7 @@ abstract class Madara(
 
         with(element) {
             select(popularMangaUrlSelector).first()?.let {
-                manga.setUrlWithoutDomain(it.attr("href"))
+                manga.setUrlWithoutDomain(it.attr("abs:href"))
                 manga.title = it.ownText()
             }
 
@@ -128,8 +135,10 @@ abstract class Madara(
 
     // Search Manga
 
+    protected open fun searchPage(page: Int): String = "page/$page/"
+
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
-        val url = HttpUrl.parse("$baseUrl/page/$page/")!!.newBuilder()
+        val url = HttpUrl.parse("$baseUrl/${searchPage(page)}")!!.newBuilder()
         url.addQueryParameter("s", query)
         url.addQueryParameter("post_type", "wp-manga")
         filters.forEach { filter ->
@@ -161,22 +170,19 @@ abstract class Madara(
                         url.addQueryParameter("m_orderby", filter.toUriPart())
                     }
                 }
+                is GenreConditionFilter -> {
+                    url.addQueryParameter("op", filter.toUriPart())
+                }
                 is GenreList -> {
-                    val genreInclude = mutableListOf<String>()
-                    filter.state.forEach {
-                        if (it.state) {
-                            genreInclude.add(it.id)
+                    filter.state
+                        .filter { it.state }
+                        .let { list ->
+                            if (list.isNotEmpty()) { list.forEach { genre -> url.addQueryParameter("genre[]", genre.id) } }
                         }
-                    }
-                    if (genreInclude.isNotEmpty()) {
-                        genreInclude.forEach { genre ->
-                            url.addQueryParameter("genre[]", genre)
-                        }
-                    }
                 }
             }
         }
-        return GET(url.build().toString(), headers)
+        return GET(url.toString(), headers)
     }
 
     private class AuthorFilter : Filter.Text("Author")
@@ -191,6 +197,10 @@ abstract class Madara(
         Pair("Trending", "trending"),
         Pair("Most Views", "views"),
         Pair("New", "new-manga")
+    ))
+    private class GenreConditionFilter : UriPartFilter("Genre condition", arrayOf(
+        Pair("or", ""),
+        Pair("and", "1")
     ))
     private class GenreList(genres: List<Genre>) : Filter.Group<Genre>("Genres", genres)
     class Genre(name: String, val id: String = name) : Filter.CheckBox(name)
@@ -265,6 +275,7 @@ abstract class Madara(
         OrderByFilter(),
         Filter.Separator(),
         Filter.Header("Genres may not work for all sources"),
+        GenreConditionFilter(),
         GenreList(getGenreList())
     )
 
@@ -289,7 +300,7 @@ abstract class Madara(
 
         with(element) {
             select("div.post-title a").first()?.let {
-                manga.setUrlWithoutDomain(it.attr("href"))
+                manga.setUrlWithoutDomain(it.attr("abs:href"))
                 manga.title = it.ownText()
             }
             select("img").first()?.let {
@@ -300,7 +311,7 @@ abstract class Madara(
         return manga
     }
 
-    override fun searchMangaNextPageSelector(): String? = "div.nav-previous, nav.navigation-ajax"
+    override fun searchMangaNextPageSelector(): String? = "div.nav-previous, nav.navigation-ajax, a.nextpostslink"
 
     // Manga Details Parse
 
@@ -359,14 +370,16 @@ abstract class Madara(
     }
 
     protected fun getXhrChapters(mangaId: String): Document {
-        val xhrHeaders = headersBuilder().add("Content-Type: application/x-www-form-urlencoded; charset=UTF-8").build()
+        val xhrHeaders = headersBuilder().add("Content-Type: application/x-www-form-urlencoded; charset=UTF-8")
+            .add("Referer", baseUrl)
+            .build()
         val body = RequestBody.create(null, "action=manga_get_chapters&manga=$mangaId")
         return client.newCall(POST("$baseUrl/wp-admin/admin-ajax.php", xhrHeaders, body)).execute().asJsoup()
     }
 
     override fun chapterListParse(response: Response): List<SChapter> {
         val document = response.asJsoup()
-        val dataIdSelector = "div#manga-chapters-holder"
+        val dataIdSelector = "div[id^=manga-chapters-holder]"
 
         return document.select(chapterListSelector())
             .let { elements ->
@@ -392,24 +405,31 @@ abstract class Madara(
                 chapter.name = urlElement.text()
             }
 
-            // For when source's chapter date is a graphic representing "new" instead of text
-            val imgDate = select("img").attr("alt")
-            if (imgDate.isNotBlank()) {
-                chapter.date_upload = parseRelativeDate(imgDate)
-            } else {
-                // For a chapter date that's text
-                select("span.chapter-release-date i").first()?.let {
-                    chapter.date_upload = parseChapterDate(it.text()) ?: 0
-                }
-            }
+            // Dates can be part of a "new" graphic or plain text
+            chapter.date_upload = select("img").firstOrNull()?.attr("alt")?.let { parseRelativeDate(it) }
+                ?: parseChapterDate(select("span.chapter-release-date i").firstOrNull()?.text())
         }
 
         return chapter
     }
 
-    open fun parseChapterDate(date: String): Long? {
+    open fun parseChapterDate(date: String?): Long {
+        date ?: return 0
+
+        fun SimpleDateFormat.tryParse(string: String): Long {
+            return try {
+                parse(string)?.time ?: 0
+            } catch (_: ParseException) {
+                0
+            }
+        }
+
         return when {
             date.endsWith(" ago", ignoreCase = true) -> {
+                parseRelativeDate(date)
+            }
+            // Handle translated 'ago' in Portuguese.
+            date.endsWith(" atrás", ignoreCase = true) -> {
                 parseRelativeDate(date)
             }
             // Handle 'yesterday' and 'today', using midnight
@@ -439,42 +459,24 @@ abstract class Madara(
                         it
                     }
                 }
-                    .let { dateFormat.parseOrNull(it.joinToString(" "))?.time }
+                    .let { dateFormat.tryParse(it.joinToString(" ")) }
             }
-            else -> dateFormat.parseOrNull(date)?.time
+            else -> dateFormat.tryParse(date)
         }
     }
 
     // Parses dates in this form:
     // 21 horas ago
     private fun parseRelativeDate(date: String): Long {
-        val trimmedDate = date.split(" ")
-        val number = trimmedDate[0].toIntOrNull()
+        val number = Regex("""(\d+)""").find(date)?.value?.toIntOrNull() ?: return 0
+        val cal = Calendar.getInstance()
 
-        /**
-         *  Size check is for Arabic language, would sometimes break if we don't check
-         *  Take that in to consideration if adding support for parsing Arabic dates
-         */
-        return if (trimmedDate.size == 3 && trimmedDate[2] == "ago" && number is Int) {
-            val cal = Calendar.getInstance()
-            // Map English and other language units to Java units
-            when (trimmedDate[1].removeSuffix("s")) {
-                "jour", "día", "day" -> cal.apply { add(Calendar.DAY_OF_MONTH, -number) }.timeInMillis
-                "heure", "hora", "hour" -> cal.apply { add(Calendar.HOUR, -number) }.timeInMillis
-                "min", "minute" -> cal.apply { add(Calendar.MINUTE, -number) }.timeInMillis
-                "segundo", "second" -> cal.apply { add(Calendar.SECOND, -number) }.timeInMillis
-                else -> 0
-            }
-        } else {
-            0
-        }
-    }
-
-    private fun SimpleDateFormat.parseOrNull(string: String): Date? {
-        return try {
-            parse(string)
-        } catch (e: ParseException) {
-            null
+        return when {
+            WordSet("jour", "día", "dia", "day").anyWordIn(date) -> cal.apply { add(Calendar.DAY_OF_MONTH, -number) }.timeInMillis
+            WordSet("heure", "hora", "hour").anyWordIn(date) -> cal.apply { add(Calendar.HOUR, -number) }.timeInMillis
+            WordSet("min", "minute", "minuto").anyWordIn(date) -> cal.apply { add(Calendar.MINUTE, -number) }.timeInMillis
+            WordSet("segundo", "second").anyWordIn(date) -> cal.apply { add(Calendar.SECOND, -number) }.timeInMillis
+            else -> 0
         }
     }
 
@@ -489,11 +491,17 @@ abstract class Madara(
 
     override fun pageListParse(document: Document): List<Page> {
         return document.select(pageListParseSelector).mapIndexed { index, element ->
-            Page(index, "", element.select("img").first()?.let {
+            Page(index, document.location(), element.select("img").first()?.let {
                 it.absUrl(if (it.hasAttr("data-src")) "data-src" else "src")
             })
         }
     }
 
+    override fun imageRequest(page: Page): Request {
+        return GET(page.imageUrl!!, headers.newBuilder().set("Referer", page.url).build())
+    }
+
     override fun imageUrlParse(document: Document) = throw UnsupportedOperationException("Not used")
 }
+
+class WordSet(private vararg val words: String) { fun anyWordIn(dateString: String): Boolean = words.any { dateString.contains(it, ignoreCase = true) } }

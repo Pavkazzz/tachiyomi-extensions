@@ -95,16 +95,15 @@ abstract class WPMangaStream(
     protected fun Elements.imgAttr(): String = this.first().imgAttr()
 
     override fun popularMangaRequest(page: Int): Request {
-        return GET("$baseUrl/manga/page/$page/?order=popular", headers)
+        return GET("$baseUrl/manga/?page=$page&order=popular", headers)
     }
 
     override fun latestUpdatesRequest(page: Int): Request {
-        return GET("$baseUrl/manga/page/$page/?order=latest", headers)
+        return GET("$baseUrl/manga/?page=$page&order=update", headers)
     }
 
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
-        val builtUrl = if (page == 1) "$baseUrl/manga/" else "$baseUrl/manga/page/$page/"
-        val url = HttpUrl.parse(builtUrl)!!.newBuilder()
+        val url = HttpUrl.parse("$baseUrl/manga/")!!.newBuilder()
         url.addQueryParameter("title", query)
         url.addQueryParameter("page", page.toString())
         filters.forEach { filter ->
@@ -156,7 +155,7 @@ abstract class WPMangaStream(
     override fun searchMangaFromElement(element: Element): SManga = popularMangaFromElement(element)
     override fun latestUpdatesFromElement(element: Element): SManga = popularMangaFromElement(element)
 
-    override fun popularMangaNextPageSelector() = "a.next.page-numbers"
+    override fun popularMangaNextPageSelector(): String? = "a.next.page-numbers, a.r"
     override fun latestUpdatesNextPageSelector() = popularMangaNextPageSelector()
     override fun searchMangaNextPageSelector() = popularMangaNextPageSelector()
 
@@ -168,7 +167,7 @@ abstract class WPMangaStream(
                 author = infoElement.select("span:contains(Author:)").firstOrNull()?.ownText()
                 artist = author
                 description = infoElement.select("div.desc p").joinToString("\n") { it.text() }
-                thumbnail_url = infoElement.select("img").imgAttr()
+                thumbnail_url = infoElement.select("div.thumb img").imgAttr()
             }
         }
     }
@@ -219,7 +218,7 @@ abstract class WPMangaStream(
             }
         } else {
             try {
-                dateFormat.parse(date).time
+                dateFormat.parse(date)?.time ?: 0
             } catch (_: Exception) {
                 0L
             }
@@ -302,6 +301,7 @@ abstract class WPMangaStream(
 
     override fun getFilterList() = FilterList(
         Filter.Header("NOTE: Ignored if using text search!"),
+        Filter.Header("Genre exclusion not available for all sources"),
         Filter.Separator(),
         AuthorFilter(),
         YearFilter(),

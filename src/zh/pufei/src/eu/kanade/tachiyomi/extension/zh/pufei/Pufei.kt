@@ -13,6 +13,7 @@ import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.ParsedHttpSource
+import java.net.URL
 import okhttp3.HttpUrl
 import okhttp3.Interceptor
 import okhttp3.MediaType
@@ -33,7 +34,7 @@ fun bodyWithAutoCharset(response: Response, _charset: String? = null): String {
     var c = _charset
 
     if (c == null) {
-        var regexPat = Regex("""charset=(\w+)""")
+        val regexPat = Regex("""charset=(\w+)""")
         val match = regexPat.find(String(htmlBytes))
         c = match?.groups?.get(1)?.value
     }
@@ -48,10 +49,11 @@ fun ByteArray.toHexString() = joinToString("%") { "%02x".format(it) }
 class Pufei : ParsedHttpSource() {
 
     override val name = "扑飞漫画"
-    override val baseUrl = "http://m.ipufei.com"
+    override val baseUrl = "http://m.pufei8.com"
     override val lang = "zh"
     override val supportsLatest = true
-    val imageServer = "http://res.img.220012.net/" // Alternative: "http://res.img.ipufei.com/"
+    val imageServer = "http://res.img.youzipi.net/"
+    val thumbnailBaseUrl = "http://i.youzipi.net/"
 
     override val client: OkHttpClient
         get() = network.client.newBuilder()
@@ -103,6 +105,8 @@ class Pufei : ParsedHttpSource() {
         val manga = SManga.create()
         manga.description = infoElement.select("div#bookIntro > p").text().trim()
         manga.thumbnail_url = infoElement.select("div.thumb > img").first()?.attr("src")
+        val relativeThumnailURL = URL(infoElement.select("div.thumb > img").first()?.attr("src")).path
+        manga.thumbnail_url = "$thumbnailBaseUrl$relativeThumnailURL"
 //        manga.author = infoElement.select("dd").first()?.text()
         return manga
     }
@@ -151,7 +155,7 @@ class Pufei : ParsedHttpSource() {
         val imgbase64 = re.find(html)?.groups?.get(1)?.value
         val imgCode = String(Base64.decode(imgbase64, Base64.DEFAULT))
         val imgArrStr = Duktape.create().use {
-            it.evaluate(imgCode + """.join('|')""") as String
+            it.evaluate("$imgCode.join('|')") as String
         }
         return imgArrStr.split('|').mapIndexed { i, imgStr ->
             Page(i, "", imageServer + imgStr)
