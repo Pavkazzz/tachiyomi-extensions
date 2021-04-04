@@ -1,6 +1,5 @@
 package eu.kanade.tachiyomi.extension.ru.mangapoisk
 
-import com.github.salomonbrys.kotson.forEach
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.asObservableSuccess
 import eu.kanade.tachiyomi.source.model.Filter
@@ -18,8 +17,8 @@ import okhttp3.Response
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import rx.Observable
-import java.text.ParseException
 import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
 class MangaPoisk : ParsedHttpSource() {
@@ -80,13 +79,17 @@ class MangaPoisk : ParsedHttpSource() {
         return popularMangaParse(response)
     }
 
+    private fun getImage(first: Element): String? {
+        val image = first.attr("data-src")
+        if (image.isNotEmpty()) {
+            return image
+        }
+        return first.attr("src")
+    }
+
     override fun popularMangaFromElement(element: Element): SManga {
         return SManga.create().apply {
-            var img = element.select("a > img").first().attr("data-src")
-            if (img.isEmpty()) {
-                img = element.select("a > img").first().attr("src")
-            }
-            thumbnail_url = img
+            thumbnail_url = getImage(element.select("a > img").first())
 
             element.select("a.card-about").first().let {
                 setUrlWithoutDomain(it.attr("href"))
@@ -138,7 +141,7 @@ class MangaPoisk : ParsedHttpSource() {
     override fun chapterListRequest(manga: SManga): Request {
         return GET("$baseUrl${manga.url}/chaptersList", headers)
     }
-    override fun chapterListSelector() = ".chapter-item > a"
+    override fun chapterListSelector() = ".chapter-item"
 
     private fun chapterFromElement(element: Element, manga: SManga): SChapter {
         val urlElement = element.select("a").first()
@@ -149,11 +152,14 @@ class MangaPoisk : ParsedHttpSource() {
 
         chapter.name = urlText.trim()
 
-        chapter.date_upload = element.select("span.chapter-date").last()?.text()?.let {
+        chapter.date_upload = element.select("span.chapter-date").first()?.text()?.let {
             try {
-                SimpleDateFormat("dd.MM.yy", Locale.US).parse(it)?.time ?: 0L
-            } catch (e: ParseException) {
-                SimpleDateFormat("dd/MM/yy", Locale.US).parse(it)?.time ?: 0L
+                when {
+                    it.contains("назад") -> Date(System.currentTimeMillis() - it.split("\\s".toRegex())[0].toLong() * 60 * 60 * 1000).time
+                    else -> SimpleDateFormat("dd MMMM yyyy", Locale("ru")).parse(it)?.time ?: 0L
+                }
+            } catch (e: Exception) {
+                Date(System.currentTimeMillis()).time
             }
         } ?: 0
         return chapter
